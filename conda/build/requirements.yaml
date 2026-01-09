@@ -1,0 +1,29 @@
+name: genai_project
+
+channels:
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+
+  # --- Core Python & Jupyter ---
+  - python=3.10
+  - pip
+  - jupyterlab
+  - ipywidgets
+
+  # --- Data Manipulation & Math ---
+
+  - numpy
+  - pandas
+  - matplotlib
+  - pillow
+
+  # --- Utilities ---
+
+  - tqdm
+  - pyyaml
+  - scikit-learn
+  - tensorboard
+

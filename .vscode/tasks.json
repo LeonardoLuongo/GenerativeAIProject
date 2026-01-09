@@ -1,0 +1,52 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "🚀 Start Background Training (Windows)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-Command",
+                "Start-Process -FilePath 'python' -ArgumentList '${file}' -RedirectStandardOutput '.\\${fileBasenameNoExtension}_log.txt' -RedirectStandardError '.\\${fileBasenameNoExtension}_error.txt' -WindowStyle Hidden"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Python: Conda Release",
+            "type": "shell",
+            "command": "conda",
+            "args": [
+                "run",
+                "-n", "genai_project", 
+                "--no-capture-output",
+                "python",
+                "-O",
+                "${file}"
+            ],
+            "options": {
+                "env": {
+                    "PYTHONPATH": "${workspaceFolder};"
+                },
+            },
+            "runOptions": {
+                "instanceLimit": 10 
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "new",      
+                "group": "tracking inference"  
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
