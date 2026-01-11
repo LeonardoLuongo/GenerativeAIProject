@@ -4,7 +4,8 @@ import sys
 from pathlib import Path
 
 # --- PARAMETRI (Devono essere uguali al train) ---
-LATENT_DIM = 128 
+EXP_NAME = "cvae_v2_mse_latent256_beta05"
+LATENT_DIM = 512 
 ATTR_INDICES = [20, 31, 39] 
 NUM_ATTR = len(ATTR_INDICES)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -17,17 +18,16 @@ import config
 from src.models.cvae import CelebACVAE
 
 def generate():
-    # 1. Crea cartella output se non esiste
-    config.OUTPUT_DIR_PATH.mkdir(parents=True, exist_ok=True)
-    
-    # 2. Carica il modello
-    model = CelebACVAE(latent_dim=LATENT_DIM, num_attr=NUM_ATTR).to(DEVICE)
-    checkpoint_path = config.MODEL_PATH / "cvae_celeba.pth"
+    checkpoint_path = config.MODEL_PATH / EXP_NAME / "model.pth"
+    output_dir = config.OUTPUT_DIR_PATH / EXP_NAME
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     if not checkpoint_path.exists():
-        print(f"Errore: File {checkpoint_path} non trovato. Aspetta che finisca almeno un'epoca!")
+        print(f"Errore: Modello non trovato in {checkpoint_path}")
         return
 
+    # Caricamento Modello
+    model = CelebACVAE(latent_dim=LATENT_DIM, num_attr=NUM_ATTR).to(DEVICE)
     model.load_state_dict(torch.load(str(checkpoint_path)))
     model.eval()
 
@@ -60,7 +60,7 @@ def generate():
             samples = model.decoder_input(z_cond)
             samples = model.decoder_conv(samples).cpu()
             
-            save_path = config.OUTPUT_DIR_PATH / f"risultato_{nome}.png"
+            save_path = output_dir / f"risultato_{nome}.png"
             save_image(samples, save_path, nrow=4, normalize=True)
             print(f"Salvato: {save_path}")
 
