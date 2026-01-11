@@ -30,7 +30,7 @@
             ],
             "options": {
                 "env": {
-                    "PYTHONPATH": "${workspaceFolder};"
+                    "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src"
                 },
             },
             "runOptions": {

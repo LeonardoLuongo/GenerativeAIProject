@@ -9,7 +9,7 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}", 
             "env": {
-                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/sportsreid;${workspaceFolder}/sportsreid/tools"
+                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src"
             }
         },
         {
@@ -21,7 +21,21 @@
             "cwd": "${workspaceFolder}",
             "noDebug": true,
             "env": {
-                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/sportsreid;${workspaceFolder}/sportsreid/tools"
+                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src"
+            }
+        },
+        {
+            "name": "Python: Debug Pytest",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${file}"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/src"
             }
         }
     ]

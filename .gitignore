@@ -1,3 +1,6 @@
 *.pt
 dataset/celeba/*
 runs/**/*
+__pycache__/*
+**/__pycache__/
+.pytest*/
