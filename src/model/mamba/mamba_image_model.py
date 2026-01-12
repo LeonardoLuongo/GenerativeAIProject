@@ -58,7 +58,7 @@ class MambaImageModel(nn.Module):
         B = attributes.shape[0]
         
         # Reset delle cache h del professore
-        self.mamba.inference_start()
+        self.mamba.inference_start(B)
         
         # 1. STEP ATTRIBUTI: "Carichiamo" la memoria di Mamba con le condizioni
         attr_emb = self.embeddings.attr_emb(attributes.long()) # (B, 3, D)
@@ -71,7 +71,7 @@ class MambaImageModel(nn.Module):
         last_pixel_val = torch.zeros(B, 1, 1, device=device) 
         
         # Recuperiamo i positional encoding pre-calcolati (dal modulo embeddings)
-        pos_enc_all = self.embeddings.create_2d_pos_encoding(device)
+        pos_enc_all = self.embeddings.create_2d_pos_encoding(dim=64, device=device)
         
         for i in range(4096):
             # Proiezione del pixel corrente + il suo encoding di posizione i-esimo

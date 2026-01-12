@@ -1,12 +1,21 @@
+import sys
+import os
+
+# Get the path to the 'src' folder and add it to Python's path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(current_dir)
+sys.path.append(src_dir)
+
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import torchvision
 from torchvision.datasets import CelebA
 from torchvision import transforms
 import os
+from torch.cuda.amp import GradScaler, autocast
 
 # Import dai tuoi moduli
 # Assicurati che config definisca le variabili, altrimenti usa quelle locali qui sotto
@@ -18,16 +27,45 @@ except ImportError:
 from model.mamba.mamba_image_model import MambaImageModel
 
 # Parametri (se non definiti in config)
-EMBEDDING_DIMENSION = 256 
-STATE_SIZE = 16
-EXPANSION = 2
-CONV_KERNEL = 4
-MAMBA_LAYERS = 8
-BATCH_SIZE = 32  
+# NANO:
+model_configs = {
+    "nano": {
+        "EMBEDDING_DIMENSION": 128,
+        "STATE_SIZE": 8,
+        "EXPANSION": 1.1,
+        "CONV_KERNEL": 4,
+        "MAMBA_LAYERS": 4
+    },
+    "mini": {
+        "EMBEDDING_DIMENSION": 256,
+        "STATE_SIZE": 12,
+        "EXPANSION": 1.1,
+        "CONV_KERNEL": 4,
+        "MAMBA_LAYERS": 4
+    },
+    "base": {
+        "EMBEDDING_DIMENSION": 512,
+        "STATE_SIZE": 16,
+        "EXPANSION": 1.1,
+        "CONV_KERNEL": 4,
+        "MAMBA_LAYERS": 5
+    }
+}
+chosen = "nano"
+EMBEDDING_DIMENSION = model_configs[chosen]["EMBEDDING_DIMENSION"]
+STATE_SIZE = model_configs[chosen]["STATE_SIZE"]
+EXPANSION = model_configs[chosen]["EXPANSION"]
+CONV_KERNEL = model_configs[chosen]["CONV_KERNEL"]
+MAMBA_LAYERS = model_configs[chosen]["MAMBA_LAYERS"]
+
+BATCH_SIZE = 128  
 LEARNING_RATE = 1e-4
 EPOCHS = 50
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Limitiamo il dataset per vedere se impara? (Opzionale)
+USE_SUBSET = False          # Metti True se vuoi fare test veloci su poche immagini
 
 def flatten_image(x):
     """
@@ -36,7 +74,7 @@ def flatten_image(x):
     """
     return x.view(-1, 1)
 
-def save_checkpoint(model, optimizer, epoch, filename="checkpoint.pth"):
+def save_checkpoint(model, optimizer, epoch, filename="nano_checkpoint.pth"):
     checkpoint = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
@@ -46,7 +84,10 @@ def save_checkpoint(model, optimizer, epoch, filename="checkpoint.pth"):
 
 def train():
     print(f"Avvio training con device: {DEVICE}")
-    
+
+    # Inizializza lo scaler per Mixed Precision
+    scaler = torch.amp.GradScaler("cuda")
+
     # Creazione cartelle per checkpoint e log
     os.makedirs("checkpoints", exist_ok=True)
     os.makedirs("runs", exist_ok=True)
@@ -72,12 +113,18 @@ def train():
         download=False       
     )
 
+    if USE_SUBSET:
+        n = 20_000
+        print(f"⚠️ TRAINING SU SOTTOINSIEME RIDOTTO ({n} immagini) PER VELOCITÀ ⚠️")
+        indices = torch.arange(n) # Usiamo solo le prime n immagini
+        train_dataset = Subset(train_dataset, indices)
+
     # 3. DataLoader
     train_dl = DataLoader(
         train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
-        num_workers=2, # Velocizza il caricamento dati
+        num_workers=5, # Velocizza il caricamento dati
         pin_memory=True
     )
 
@@ -107,29 +154,32 @@ def train():
         for batch_idx, (imgs, attrs) in enumerate(loop):
             # Preparazione dati
             imgs = imgs.to(DEVICE)  # (B, 4096, 1)
-            # Selezioniamo 3 attributi: Male(20), Smiling(31), Young(39) (esempio)
+            # Selezioniamo 3 attributi: Male(20), Smiling(31), Young(39)
             selected_attrs = attrs[:, [20, 31, 39]].long().to(DEVICE) # (B, 3)
             
             # --- Forward Pass (Teacher Forcing) ---
-            # Il modello riceve pixels [0...4094] e attributi
-            logits = model(imgs, selected_attrs) # (B, 4096, 256)
-
             # --- Calcolo Loss ---
             # Target: pixels [1...4095] convertiti in indici interi 0-255
             # Nota: imgs è normalizzato [0,1], lo riportiamo a [0,255] per la CrossEntropy
             target_indices = (imgs.squeeze(-1) * 255).long() # (B, 4096)
-            
-            # Flattening per la loss: (B*4096, 256) vs (B*4096)
-            loss = criterion(logits.reshape(-1, 256), target_indices.reshape(-1))
+
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                # Il modello riceve pixels [0...4094] e attributi
+                logits = model(imgs, selected_attrs) # (B, 4096, 256)
+
+                # Flattening per la loss: (B*4096, 256) vs (B*4096)
+                loss = criterion(logits.reshape(-1, 256), target_indices.reshape(-1))
 
             # --- Backward Pass ---
             optimizer.zero_grad()
-            loss.backward()
+            scaler.scale(loss).backward()
             
             # Gradient Clipping (importante per Mamba/RNN per evitare esplosioni)
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
-            optimizer.step()
+
+            scaler.step(optimizer)
+            scaler.update()
 
             # --- Logging ---
             total_loss += loss.item()
@@ -146,7 +196,7 @@ def train():
         print(f"Epoch {epoch+1} completata. Avg Loss: {avg_loss:.4f}")
 
         # Salva Checkpoint
-        save_path = f"checkpoints/mamba_epoch_{epoch+1}.pth"
+        save_path = f"checkpoints/nano_mamba_epoch_{epoch+1}.pth"
         save_checkpoint(model, optimizer, epoch, save_path)
 
         # --- Generazione di Test (Visualizzazione) ---

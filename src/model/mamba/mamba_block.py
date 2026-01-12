@@ -34,10 +34,10 @@ class MambaBlock(nn.Module):
         return y
 
     @torch.no_grad
-    def inference_start(self):
+    def inference_start(self, batch_size=1):
         self.cached_A=self.computeA()
         self.cached_h=torch.zeros(
-                1, 1, self.dim, self.state_size,
+                batch_size, 1, self.dim, self.state_size,
                 device=self.cached_A.device)
 
     def clean_cached(self):

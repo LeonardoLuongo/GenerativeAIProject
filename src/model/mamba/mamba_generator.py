@@ -27,13 +27,13 @@ class MambaGenerator(nn.Module):
             x = layer(x)
         return x
 
-    def inference_start(self):
+    def inference_start(self, batch_size=1):
         """
         Prepara tutti i layer interni per la generazione step-by-step
         pulendo le cache degli stati precedenti (h).
         """
         for layer in self.layers:
-            layer.inference_start()
+            layer.inference_start(batch_size)
 
     def inference_step(self, x):
         """

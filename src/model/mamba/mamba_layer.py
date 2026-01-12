@@ -33,9 +33,9 @@ class MambaLayer(nn.Module):
 
 
     @torch.no_grad
-    def inference_start(self):
-        self.mamba.inference_start()
-        self.cached_x=torch.zeros(1, self.conv_kernel, self.edim)
+    def inference_start(self, batch_size=1):
+        self.mamba.inference_start(batch_size)
+        self.cached_x=torch.zeros(batch_size, self.conv_kernel, self.edim)
 
     @torch.no_grad
     def inference_step(self, x):
