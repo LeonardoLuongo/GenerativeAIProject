@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 
 # --- PARAMETRI (Devono essere uguali al train) ---
-EXP_NAME = "cvae_v2_mse_latent256_beta05"
-LATENT_DIM = 512 
+EXP_NAME = "cvae_balanced_sum_loss"
+LATENT_DIM = 128 
 ATTR_INDICES = [20, 31, 39] 
 NUM_ATTR = len(ATTR_INDICES)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -28,11 +28,10 @@ def generate():
 
     # Caricamento Modello
     model = CelebACVAE(latent_dim=LATENT_DIM, num_attr=NUM_ATTR).to(DEVICE)
-    model.load_state_dict(torch.load(str(checkpoint_path)))
+    model.load_state_dict(torch.load(str(checkpoint_path), map_location=DEVICE))
     model.eval()
 
-    # 3. Definiamo le combinazioni di test [Uomo, Sorriso, Giovane]
-    # 1.0 = Sì, 0.0 = No
+    # Combinazioni di test [Male, Smiling, Young]
     scenari = {
         "donna_sorridente_giovane": [0., 1., 1.],
         "uomo_non_sorridente_giovane": [1., 0., 1.],
@@ -40,28 +39,32 @@ def generate():
         "uomo_sorridente_anziano": [1., 1., 0.]
     }
 
-    print("Generazione immagini in corso...")
+    print(f"Generazione immagini in corso su {DEVICE}...")
 
     with torch.no_grad():
         for nome, attributi in scenari.items():
             # Creiamo un vettore di attributi e lo spostiamo su GPU
             cond = torch.tensor([attributi]).to(DEVICE)
             
-            # Generiamo 16 variazioni diverse (z casuali) per lo stesso identico attributo
-            z = torch.randn(16, LATENT_DIM).to(DEVICE)
+            # Generiamo 16 variazioni diverse (z casuali)
+            z = torch.randn(16, LATENT_DIM).to(DEVICE) 
             
-            # Espandiamo il condizionamento per tutti i 16 campioni
+            # Espandiamo il condizionamento per i 16 campioni
             cond_expanded = cond.expand(16, -1)
             
-            # Passiamo al decoder: concateniamo z e attributi
+            # Concateniamo z e attributi
             z_cond = torch.cat((z, cond_expanded), dim=1)
             
-            # Generazione pixel
-            samples = model.decoder_input(z_cond)
-            samples = model.decoder_conv(samples).cpu()
+            # --- LOGICA CORRETTA PER IL NUOVO MODELLO ---
+            # Passiamo prima per il decoder_input
+            x = model.decoder_input(z_cond)
+            # Poi per il blocco decoder (le convoluzioni)
+            samples = model.decoder(x).cpu()
+            # --------------------------------------------
             
             save_path = output_dir / f"risultato_{nome}.png"
-            save_image(samples, save_path, nrow=4, normalize=True)
+            # Nota: normalize=False perché la Sigmoid finale dà già valori [0,1]
+            save_image(samples, save_path, nrow=4, normalize=False)
             print(f"Salvato: {save_path}")
 
 if __name__ == "__main__":
