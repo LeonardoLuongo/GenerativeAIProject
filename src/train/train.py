@@ -225,7 +225,6 @@ def train():
     print("Training completato.")
 
 if __name__ == "__main__":
-    # Assicurati di aver corretto prediction_head.py prima di lanciare!
     train()
 
 

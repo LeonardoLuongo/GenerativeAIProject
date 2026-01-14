@@ -1,0 +1,46 @@
+
+---
+
+### Design Architetturale: Patch-Mamba con Deblocking Head
+
+#### 1. Preprocessing: Patchify
+
+* 
+**Input:** Immagine CelebA .
+
+
+* **Task:** Divisione in patch di dimensione  (es.  o ).
+* **Flattening:** Ogni patch viene trasformata in un vettore di dimensione .
+* **Output:** Una sequenza di  patch (dove ). Se , .
+
+#### 2. Embedding & Conditioning
+
+* **Linear Projection:** Ogni patch vettorializzata viene proiettata in dimensione .
+* 
+**Conditional Prefix:** I 3 attributi (Male, Smiling, Young) vengono inseriti come token iniziali .
+
+
+* **Positional Encoding:** Indispensabile. Essendo un modello causale 1D, Mamba deve sapere se la patch che sta generando si trova nell'angolo in alto a sinistra o al centro del volto.
+
+#### 3. Core Engine: Causal Mamba Stack
+
+* 
+**Logica:** Autoregressiva. Mamba predice l'embedding della patch  basandosi sulla storia delle patch precedenti e sugli attributi.
+
+
+* **Vantaggio:** Gestire 256 token è molto più leggero per lo stato interno di Mamba rispetto ai 4096 pixel originali.
+
+#### 4. Reconstruction & Stitching (La "Cucitura")
+
+* **Reconstruction Head:** Un layer `nn.Linear(D, P*P*3)` che riporta l'embedding allo spazio dei pixel della patch.
+* **Sigmoid:** Per confinare i valori in $[0, 1]$.
+* **Stitching:** Le patch vengono ricomposte nella griglia . A questo punto, l'immagine presenterà le linee di giunzione (seams) che hai menzionato.
+
+#### 5. Deblocking Convolutional Head (La tua proposta)
+
+* **Task:** "Smoothing" intelligente e correzione dei bordi.
+* **Architettura:** Una piccola serie di layer convoluzionali (es. 2 o 3 layer) con kernel  o , **stride=1** e **padding=same**.
+* **Logica:** Poiché i kernel convoluzionali scorrono sull'intera immagine ricomposta, "vedono" contemporaneamente i pixel di due patch adiacenti e imparano a mediare i valori per eliminare lo stacco netto.
+* **Output:** Immagine  fluida e coerente.
+
+---
