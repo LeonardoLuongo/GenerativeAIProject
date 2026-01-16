@@ -4,3 +4,6 @@ runs/**/*
 *.png
 *.pth
 __pycache__/
+*.jpg
+src/dataset/
+models_weights/

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from Attention import SelfAttention
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-TIME_ENCODING_SIZE = 256
+TIME_ENCODING_SIZE = 128
 
 class ResidualBlock(nn.Module):
     def __init__(self, channels):
@@ -90,6 +90,8 @@ class UNetBlock(nn.Module):
         half_size = self.size // 2
         y1 = torch.cat((y, context_reshaped.expand(-1, TIME_ENCODING_SIZE, half_size, half_size)), dim=1)#con expand creo una matrice 8x8x64 dove copio il vettore per ogni punto dell 8x8
         x1 = self.decoder(y1)
+        
+        #skip connection
         x2 = torch.cat((x1, x), dim=1)
         out = self.combiner(x2)
 

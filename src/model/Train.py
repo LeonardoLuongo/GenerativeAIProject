@@ -5,25 +5,52 @@ from torch.utils.data import DataLoader
 import torchvision.utils as vutils
 import torch.nn.functional as F
 import os
-from config import *
 from Network import ConditionalNetwork
 from NoiseSchedule import NoiseSchedule
-from Dataset import CelebADataset
+from torchvision.datasets import CelebA
+import torchvision.transforms as transforms
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+try:
+    from config import *
+except ImportError:
+    print("Attenzione: config.py non trovato, uso parametri locali.")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    # Prova a forzare l'uso della prima GPU visibile assegnata da SLURM
+    device = torch.device("cuda:0")
+    print(f"CUDA Disponibile. Device count: {torch.cuda.device_count()}")
+    print(f"Device corrente: {torch.cuda.current_device()}")
+    print(f"Nome GPU: {torch.cuda.get_device_name(0)}")
+else:
+    device = torch.device("cpu")
+    print("CUDA NON disponibile. Uso CPU.")
 
 # Parametri del Modello e Training
 L = 1000                # Step di diffusione
-IMAGE_DIMENSIONS = (3, 64, 64)
 BATCH_SIZE = 256
-LEARNING_RATE = 1e-4    # 0.0001 è standard per Adam
+LEARNING_RATE = 2e-4
+WEIGHT_DECAY = 0.01   # Regolarizzazione
 WARMUP_EPOCHS = 5
-EPOCHS = 60
+EPOCHS = 100
 
 # Percorsi
-IMG_DIR = DATASET_CELEBA_PROCESSED_DATA_64_64
-ATTR_FILE = DATASET_CELEBA_PROCESSED_DATA_LIST_ATTR
 CHECKPOINT_DIR = './checkpoints'
+DATA_ROOT = '/home/pfoggia/GenerativeAI/CELEBA'
+ATTR_INDICES = [20, 31, 39] 
+
+transform = transforms.Compose([
+    transforms.CenterCrop(178),             # Ritaglia il quadrato centrale
+    transforms.Resize((64, 64)),            # Ridimensiona a 64x64
+    transforms.ToTensor(),                  # Converte in tensore [0,1]
+    transforms.Normalize((0.5, 0.5, 0.5),   # Normalizza in [-1, 1]
+                         (0.5, 0.5, 0.5))
+])
+print(f"Caricamento dataset CelebA da: {DATA_ROOT}")
+dataset = CelebA(root=DATA_ROOT, split='train', target_type='attr', transform=transform, download=False)
+
+dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+noise_schedule = NoiseSchedule(L, device=device)
 
 class EMA:
     def __init__(self, model, decay=0.999):
@@ -59,33 +86,36 @@ if not os.path.exists(CHECKPOINT_DIR):
 
 print(f"Inizializzazione su device: {device}")
 
-# Dataset e Dataloader
-print("Caricamento dataset...")
-dataset = CelebADataset(IMG_DIR, ATTR_FILE)
 
-dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-
-noise_schedule = NoiseSchedule(L, device=device)
 
 # Creazione Modello
 print("Creazione modello...")
 # Passiamo L al costruttore come abbiamo modificato prima
-model = ConditionalNetwork(L=L)
+model = ConditionalNetwork(L=L, cfg_dropout=0.1)
 model = model.to(device)
 
 ema = EMA(model, decay=0.999)
 
-# Optimizer e Loss
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+# Optimizer AdamW migliore per batch grandi e Loss
+optimizer = optim.AdamW(
+    model.parameters(), 
+    lr=LEARNING_RATE,
+    weight_decay=WEIGHT_DECAY,
+    betas=(0.9, 0.999)
+)
 
 # Variabile globale per contare le epoche
 epoch_count = 0
 
-def get_lr(epoch):
-    """Funzione semplice per warmup lineare"""
+def get_lr_multiplier(epoch):
     if epoch < WARMUP_EPOCHS:
-        return LEARNING_RATE * (epoch + 1) / WARMUP_EPOCHS
-    return LEARNING_RATE
+        return (epoch + 1) / WARMUP_EPOCHS
+    else:
+        # Cosine decay
+        progress = (epoch - WARMUP_EPOCHS) / (EPOCHS - WARMUP_EPOCHS)
+        return 0.5 * (1 + torch.cos(torch.tensor(progress * 3.14159)).item())
+
+scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=get_lr_multiplier)
 
 def save_sample_images(epoch, model, noise_schedule, device):
     """
@@ -105,15 +135,21 @@ def save_sample_images(epoch, model, noise_schedule, device):
         # Attributi di test
         attrs = torch.zeros(n_samples, 3).to(device)
         attrs[:4] = torch.tensor([1, 1, 1]) # Uomo, Sorriso, Giovane
-        attrs[4:] = torch.tensor([0, 0, 0]) # Donna, No Sorriso, Giovane
+        attrs[4:] = torch.tensor([0, 0, 0]) # Donna, No Sorriso, non Giovane
         
+        guidance_scale = 1.3
+
         # 2. Ciclo di Sampling DDIM
         for i in range(L - 1, -1, -1):
             t = torch.tensor([i] * n_samples, device=device)
             
-            # A. Predizione del rumore
-            eps = model(x, t, attrs)
-            
+            # A. Predizione del rumore condizionata
+            eps_cond = model(x, t, attrs, drop_condition=False)
+            # Predizione non condizionata
+            eps_uncond = model(x, t, attrs, drop_condition=True)
+            # Formula per CFG
+            eps = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
+
             # B. Recupero Alpha Cumulativi (alpha_bar)
             # noise_schedule.alpha contiene già il prodotto cumulativo (quello che i paper chiamano alpha_bar)
             alpha_bar_t = noise_schedule.alpha[i]
@@ -156,21 +192,16 @@ def save_sample_images(epoch, model, noise_schedule, device):
 def training_epoch(dataloader):
     global epoch_count
     model.train() # Mette il modello in modalità training (abilita dropout/batchnorm)
-    average_loss = 0.0
-    
-    current_lr = get_lr(epoch_count)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = current_lr
+    total_loss = 0.0
         
-    print(f"Epoch {epoch_count} start. LR: {current_lr:.6f}")
-
-    # Barra di progresso testuale
-    total_steps = len(dataloader)
+    print(f"\n{'='*60}")
+    print(f"Epoch {epoch_count + 1}/{EPOCHS} | LR: {scheduler.get_last_lr()[0]:.6f}")
+    print(f"{'='*60}")
     
-    for step, (x, attributes) in enumerate(dataloader):
+    for step, (x, all_attributes) in enumerate(dataloader):
         # Spostiamo i dati sulla GPU
         x = x.to(device)
-        attributes = attributes.to(device)
+        attributes = all_attributes[:, ATTR_INDICES].float().to(device)
         
         n = x.shape[0] # Minibatch size
 
@@ -191,7 +222,19 @@ def training_epoch(dataloader):
         # Predizione della rete
         # Passiamo zt (immagine), t (tempo), attributes (condizione)
         g = model(zt, t, attributes)
-        loss = F.mse_loss(g,eps)
+        
+        # LOSS PESATA PER TIMESTEP (Min-SNR weighting)
+        # Timestep bassi (immagine pulita) = peso più alto
+        # Timestep alti (rumore puro) = peso più basso
+        snr = noise_schedule.alpha[t] / (1 - noise_schedule.alpha[t] + 1e-8)
+        snr_clamped = torch.clamp(snr, min=0.5, max=2.0)
+        
+        # Loss base
+        loss_simple = F.mse_loss(g, eps, reduction='none')
+        loss_simple = loss_simple.mean(dim=[1, 2, 3])  # (B,)
+        
+        # Applica peso
+        loss = (loss_simple * snr_clamped).mean()
 
        # Protezione NaN
         if torch.isnan(loss):
@@ -206,33 +249,87 @@ def training_epoch(dataloader):
         optimizer.step()      # Aggiorna i pesi
         ema.update()
 
-        # Aggiornamento media mobile della loss (per il print)
-        average_loss = 0.9 * average_loss + 0.1 * loss.cpu().item()
+        total_loss += loss.item()
         
-        # Print ogni 100 step per vedere che succede
-        if step % 100 == 0:
-            print(f"   Step {step}/{total_steps} | Loss corrente: {loss.item():.4f}")
-
+        if step % 50 == 0:
+            print(f"Step [{step:4d}/{len(dataloader)}] | Loss: {loss.item():.4f}")
+    
+    avg_loss = total_loss / len(dataloader)
     epoch_count += 1
-    print(f'>>> Epoch {epoch_count} completata. Average loss={average_loss:.4f}')
+    
+    print(f"\n>>> Epoch {epoch_count} completata | Avg Loss: {avg_loss:.4f}")
     
     # SALVATAGGIO CHECKPOINT
-    # Fondamentale: salviamo il modello alla fine di ogni epoca
-    save_path = os.path.join(CHECKPOINT_DIR, f"ddpm_celebA_ep{epoch_count}.pth")
-    torch.save(model.state_dict(), save_path)
-    print(f"Modello salvato in: {save_path}")
-    save_sample_images(epoch_count, model, noise_schedule, device)
+    checkpoint = {
+        'epoch': epoch_count,
+        'model_state_dict': model.state_dict(),
+        'ema_shadow': ema.shadow,
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'loss': avg_loss,
+    }
+    torch.save(checkpoint, os.path.join(CHECKPOINT_DIR, f"checkpoint_ep{epoch_count}.pth"))
+    
+    # Sample ogni 5 epoche
+    if epoch_count % 5 == 0 or epoch_count == 1:
+        save_sample_images(epoch_count, model, noise_schedule, device)
+    
+    scheduler.step()
 
 
 
 if __name__ == '__main__':
     print(f"Inizio training per {EPOCHS} epoche...")
     
+    # --- LOGICA DI RIPRESA (RESUME) ---
+    # Imposta qui il nome del file da cui vuoi ripartire (es. epoch 65)
+    resume_path = os.path.join(CHECKPOINT_DIR, "checkpoint_ep67.pth")
+    
+    start_epoch = 0 # Default se non trova nulla
+    
+    if os.path.exists(resume_path):
+        print(f"\n>>> Trovato checkpoint: {resume_path}")
+        print(">>> Caricamento stato del training...")
+        
+        # Carichiamo il dizionario completo
+        checkpoint = torch.load(resume_path, map_location=device)
+        
+        # 1. Ripristina i pesi del Modello
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # 2. Ripristina l'EMA (Fondamentale per la qualità finale)
+        if 'ema_shadow' in checkpoint:
+            ema.shadow = checkpoint['ema_shadow']
+            print(" -> EMA ripristinato.")
+            
+        # 3. Ripristina Optimizer e Scheduler 
+        # (Questo evita che il Learning Rate torni alto all'inizio)
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # 4. Imposta l'epoca di partenza
+        start_epoch = checkpoint['epoch']
+        epoch_count = start_epoch # Aggiorniamo la variabile globale
+        
+        print(f">>> Training ripristinato! Si riparte dall'epoca {start_epoch + 1}.\n")
+    else:
+        print(">>> Nessun checkpoint trovato o file non esistente. Si parte da ZERO.\n")
+
     try:
-        for _ in range(EPOCHS):
+        # Modifichiamo il loop per usare range(start, end)
+        for _ in range(start_epoch, EPOCHS):
             training_epoch(dataloader)
             
     except KeyboardInterrupt:
-        print("\nTraining interrotto manualmente. Salvataggio ultimo stato...")
-        torch.save(model.state_dict(), os.path.join(CHECKPOINT_DIR, "model_interrupted.pth"))
+        print("\nTraining interrotto manualmente. Salvataggio di emergenza...")
+        # Salviamo un checkpoint completo anche in caso di interruzione
+        checkpoint = {
+            'epoch': epoch_count,
+            'model_state_dict': model.state_dict(),
+            'ema_shadow': ema.shadow,
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'loss': 0.0, # Valore dummy
+        }
+        torch.save(checkpoint, os.path.join(CHECKPOINT_DIR, "model_interrupted.pth"))
         print("Salvataggio di emergenza completato.")
