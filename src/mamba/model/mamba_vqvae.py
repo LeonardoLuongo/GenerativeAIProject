@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from model.mamba.residual_mamba_layer import ResidualMambaLayer
+from mamba.model.residual_mamba_layer import ResidualMambaLayer
 
 class MambaVQVAE(nn.Module):
     def __init__(self, 
@@ -8,7 +8,9 @@ class MambaVQVAE(nn.Module):
                  dim=512,           # Deve matchare la dim del ResidualMambaLayer
                  state_size=16,
                  num_layers=6,
-                 num_attr=3):
+                 num_attr=3,
+                 expansion=1.2
+                 ):
         super().__init__()
         self.vocab_size = vocab_size
         self.num_attr = num_attr
@@ -30,7 +32,7 @@ class MambaVQVAE(nn.Module):
 
         # 5. Stack di Mamba (Codice del PROF)
         self.layers = nn.ModuleList([
-            ResidualMambaLayer(dim=dim, state_size=state_size, conv_kernel=4, expansion=1.1)
+            ResidualMambaLayer(dim=dim, state_size=state_size, conv_kernel=4, expansion=expansion)
             for _ in range(num_layers)
         ])
 

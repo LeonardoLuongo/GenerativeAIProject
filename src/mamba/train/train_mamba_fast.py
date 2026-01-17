@@ -10,7 +10,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.dirname(current_dir)
 sys.path.append(src_dir)
 
-from model.mamba.mamba_vqvae import MambaVQVAE
+from mamba.model.mamba_vqvae import MambaVQVAE
 
 # --- CONFIGURAZIONE VELOCE ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

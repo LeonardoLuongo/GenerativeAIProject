@@ -6,16 +6,16 @@ import torchvision
 
 # Setup paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
-src_dir = os.path.dirname(current_dir)
+src_dir = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(src_dir)
 
-from model.vq_vae.vq_vae import VQVAE
-from model.mamba.mamba_vqvae import MambaVQVAE
+from vqvae.model.vq_vae import VQVAE
+from mamba.model.mamba_vqvae import MambaVQVAE
 
 # --- CONFIG ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 VQ_PATH = "checkpoints/vqvae_16x16_2_epoch_50.pth"     # Il tuo VQ-VAE
-MAMBA_PATH = "checkpoints/mamba_vq_epoch_20.pth"       # Il tuo Mamba addestrato
+MAMBA_PATH = "checkpoints/mamba_vq_epoch_5.pth"       # Il tuo Mamba addestrato
 
 def load_models():
     # 1. VQ-VAE
@@ -24,7 +24,7 @@ def load_models():
     vq.eval()
     
     # 2. Mamba
-    mamba = MambaVQVAE(vocab_size=1024, dim=512, state_size=16, num_layers=6).to(DEVICE)
+    mamba = MambaVQVAE(vocab_size=1024, dim=512, state_size=32, num_layers=6, expansion=2.0).to(DEVICE)
     mamba.load_state_dict(torch.load(MAMBA_PATH, map_location=DEVICE))
     mamba.eval()
     
@@ -47,7 +47,7 @@ def main():
             print("Generazione in corso (256 step)...")
             with torch.no_grad():
                 # 1. Mamba genera gli indici (token)
-                generated_indices = mamba_model.generate(attrs, steps=256) # (1, 256)
+                generated_indices = mamba_model.generate(attrs, steps=256, temperature=0.7, top_k=50) # (1, 256)
                 
                 # 2. VQ-VAE decodifica gli indici in immagine
                 # decode_from_indices si aspetta (B, H, W) o (B, SeqLen) gestito internamente

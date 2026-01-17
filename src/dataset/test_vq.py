@@ -11,7 +11,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.dirname(current_dir)
 sys.path.append(src_dir)
 
-from model.vq_vae.vq_vae import VQVAE
+from vqvae.model.vq_vae import VQVAE
 
 # CONFIG
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

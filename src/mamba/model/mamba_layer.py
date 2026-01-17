@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from model.mamba.mamba_block import MambaBlock
+from mamba.model.mamba_block import MambaBlock
 
 
 class MambaLayer(nn.Module):

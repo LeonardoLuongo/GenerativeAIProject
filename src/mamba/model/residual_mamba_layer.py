@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from model.mamba.mamba_layer import MambaLayer
+from mamba.model.mamba_layer import MambaLayer
 
 class ResidualMambaLayer(nn.Module):
     def __init__(self, dim, state_size, conv_kernel=4,
