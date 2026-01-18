@@ -171,7 +171,7 @@ def train():
     optimizer = torch.optim.AdamW(mamba.parameters(), lr=LR)
     criterion = nn.CrossEntropyLoss()
 
-    writer = SummaryWriter(log_dir="runs/mamba_vqvae_grid")
+    writer = SummaryWriter(log_dir="runs/mamba_vqvae_snake")
     scaler = torch.amp.GradScaler("cuda") 
     
     # Prepara il batch fisso di 8 attributi per la validazione visiva
@@ -198,6 +198,9 @@ def train():
             with torch.no_grad():
                 # Indices shape: (B, 256) per immagini 64x64 con VQVAE 16x16
                 indices = vqvae.get_codebook_indices(imgs)
+
+            # Trasformiamo gli indici in snake order prima di darli a Mamba
+            indices = MambaVQVAE.snake_process(indices, side_len=16)
 
             with torch.amp.autocast("cuda"):
                 # Forward: Input completo
@@ -259,16 +262,21 @@ def train():
         with torch.no_grad():
             # 1. Generazione Indici
             # Passiamo (8, 3) tensore di attributi
-            generated_indices = mamba.generate(fixed_attrs, steps=256, temperature=1.0) # (8, 256)
+            generated_indices_snake = mamba.generate(fixed_attrs, steps=256, temperature=1.0) # (8, 256)
+
+            # Mamba ha generato a serpente, dobbiamo "srotolarlo" (Un-snake) 
+            # per darlo al decoder VQVAE che si aspetta raster scan.
+            # La funzione è la sua stessa inversa.
+            generated_indices_raster = MambaVQVAE.snake_process(generated_indices_snake, side_len=16)
             
             # 2. Metriche sui dati generati (fondamentale per capire se sta collassando)
-            gen_u_ratio, gen_perp = calculate_codebook_metrics(generated_indices, VQ_DIM)
+            gen_u_ratio, gen_perp = calculate_codebook_metrics(generated_indices_raster, VQ_DIM)
             print(f" >> Generated Metrics | Unique Ratio: {gen_u_ratio:.3f} | Perplexity: {gen_perp:.2f}")
             writer.add_scalar('Metrics/Generated_Unique_Ratio', gen_u_ratio, epoch+1)
             writer.add_scalar('Metrics/Generated_Perplexity', gen_perp, epoch+1)
 
             # 3. Decodifica Immagini
-            generated_img = vqvae.decode_from_indices(generated_indices) # (8, 3, 64, 64)
+            generated_img = vqvae.decode_from_indices(generated_indices_raster) # (8, 3, 64, 64)
             
             # 4. Creazione Griglia con Titoli
             grid_tensor = create_grid_figure(generated_img, fixed_attrs, ATTR_NAMES)
@@ -277,7 +285,7 @@ def train():
 
         # Salvataggio
         if (epoch + 1) % 5 == 0:
-            torch.save(mamba.state_dict(), f"checkpoints/mamba_vq_epoch_{epoch+1}.pth")
+            torch.save(mamba.state_dict(), f"checkpoints/mamba_vq_snake_epoch_{epoch+1}.pth")
             print(f"Checkpoint salvato: epoch {epoch+1}")
 
 if __name__ == "__main__":

@@ -39,6 +39,26 @@ class MambaVQVAE(nn.Module):
         # 6. Output Head (predice il prossimo indice del codebook)
         self.head = nn.Linear(dim, vocab_size, bias=False)
 
+    @staticmethod
+    def snake_process(indices, side_len=16):
+        """
+        Trasforma gli indici da Raster Scan a Snake Scan (e viceversa).
+        Inverte l'ordine degli elementi nelle righe dispari.
+        
+        indices: (B, L) dove L = side_len * side_len (es. 256)
+        """
+        B, L = indices.shape
+        assert L == side_len * side_len, f"La lunghezza {L} non corrisponde a {side_len}x{side_len}"
+        
+        # Facciamo una copia per non modificare i tensori in-place se usati altrove
+        x = indices.clone().view(B, side_len, side_len)
+        
+        # Invertiamo le righe dispari (indice 1, 3, 5...)
+        # dim=2 è l'asse della larghezza
+        x[:, 1::2] = x[:, 1::2].flip(dims=[2])
+        
+        return x.reshape(B, L)
+
     def forward(self, idx_seq, attr_seq):
         """
         idx_seq: (B, 256) -> Indici dal VQ-VAE
