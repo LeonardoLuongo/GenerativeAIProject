@@ -4,188 +4,187 @@ from mamba.model.residual_mamba_layer import ResidualMambaLayer
 
 class MambaVQVAE(nn.Module):
     def __init__(self, 
-                 vocab_size=1024,   # Dimensione codebook VQ-VAE
-                 dim=512,           # Deve matchare la dim del ResidualMambaLayer
+                 vocab_size=1024,
+                 dim=512,
                  state_size=16,
-                 num_layers=6,
+                 num_layers=16,
                  num_attr=3,
-                 expansion=1.2
+                 expansion=2.0,
+                 kernel_size=17,
+                 dropout_prob=0.1
                  ):
         super().__init__()
         self.vocab_size = vocab_size
         self.num_attr = num_attr
         self.dim = dim
+        self.dropout_prob = dropout_prob
 
-        # 1. Embedding per i token del VQ-VAE (Indici 0-1023)
+        # 1. Embeddings
         self.token_emb = nn.Embedding(vocab_size, dim)
-        
-        # 2. Embedding per gli attributi (0 o 1)
-        # Usiamo 2 vettori separati per ogni attributo per dare info posizionale implicita
-        self.attr_emb = nn.Embedding(2, dim) 
-        
-        # 3. Token speciale di inizio sequenza (SOS)
-        # Serve per dire a Mamba "Inizia a generare basandoti sugli attributi"
+        self.attr_emb = nn.Embedding(3, dim) 
         self.sos_token = nn.Parameter(torch.randn(1, 1, dim))
 
-        # 4. Positional Embedding (Opzionale ma aiuta molto su sequenze corte come 16x16)
-        self.pos_emb = nn.Embedding(256 + num_attr + 1, dim)
+        # 2. POSITIONAL EMBEDDING 2D LEARNABLE
+        self.h_emb = nn.Embedding(16, dim // 2) # Rows
+        self.w_emb = nn.Embedding(16, dim // 2) # Cols
+        self.attr_pos_emb = nn.Embedding(4, dim)
 
-        # 5. Stack di Mamba (Codice del PROF)
+        # 3. Mamba Layers
         self.layers = nn.ModuleList([
-            ResidualMambaLayer(dim=dim, state_size=state_size, conv_kernel=4, expansion=expansion)
+            ResidualMambaLayer(
+                dim=dim, 
+                state_size=state_size, 
+                conv_kernel=kernel_size,
+                expansion=expansion
+            )
             for _ in range(num_layers)
         ])
 
-        # 6. Output Head (predice il prossimo indice del codebook)
         self.head = nn.Linear(dim, vocab_size, bias=False)
+
+        # --- CACHE DEGLI INDICI POSIZIONALI ---
+        # 1. Crea griglia Raster
+        rows = torch.arange(16).unsqueeze(1).repeat(1, 16) # 0..15 giù
+        cols = torch.arange(16).unsqueeze(0).repeat(16, 1) # 0..15 destra
+        
+        # 2. Stack (256, 2) e aggiungi dimensione batch (1, 256, 2)
+        coords = torch.stack([rows.flatten(), cols.flatten()], dim=1).unsqueeze(0)
+        
+        # 3. Snake Process
+        coords_snake = self.snake_process(coords, side_len=16) # (1, 256, 2)
+        
+        # 4. Rimuovi dim batch (256, 2)
+        coords_snake = coords_snake.squeeze(0)
+        
+        # 5. Register Buffer (Gestione automatica del device)
+        self.register_buffer('cached_r_idx', coords_snake[:, 0])
+        self.register_buffer('cached_c_idx', coords_snake[:, 1])
 
     @staticmethod
     def snake_process(indices, side_len=16):
-        """
-        Trasforma gli indici da Raster Scan a Snake Scan (e viceversa).
-        Inverte l'ordine degli elementi nelle righe dispari.
+        B, L = indices.shape[:2] # Prende B e L (funziona sia per 2D che 3D tensors)
         
-        indices: (B, L) dove L = side_len * side_len (es. 256)
-        """
-        B, L = indices.shape
-        assert L == side_len * side_len, f"La lunghezza {L} non corrisponde a {side_len}x{side_len}"
-        
-        # Facciamo una copia per non modificare i tensori in-place se usati altrove
-        x = indices.clone().view(B, side_len, side_len)
-        
-        # Invertiamo le righe dispari (indice 1, 3, 5...)
-        # dim=2 è l'asse della larghezza
-        x[:, 1::2] = x[:, 1::2].flip(dims=[2])
-        
-        return x.reshape(B, L)
+        # Supporta sia (B, L) che (B, L, D) per processare coordinate
+        if len(indices.shape) == 3:
+            D = indices.shape[2]
+            x = indices.clone().view(B, side_len, side_len, D)
+            x[:, 1::2] = x[:, 1::2].flip(dims=[2])
+            return x.reshape(B, L, D)
+        else:
+            x = indices.clone().view(B, side_len, side_len)
+            x[:, 1::2] = x[:, 1::2].flip(dims=[2])
+            return x.reshape(B, L)
 
-    def forward(self, idx_seq, attr_seq):
+    def _get_cached_pos_emb(self):
         """
-        idx_seq: (B, 256) -> Indici dal VQ-VAE
-        attr_seq: (B, 3)  -> Attributi (0 o 1)
+        Recupera gli embedding usando gli indici cachati.
         """
+        # Essendo buffer registrati, self.cached_r_idx è già sul device corretto
+        r_emb = self.h_emb(self.cached_r_idx) # (256, dim/2)
+        c_emb = self.w_emb(self.cached_c_idx) # (256, dim/2)
+        
+        # Concatena
+        return torch.cat([r_emb, c_emb], dim=-1) # (256, dim)
+
+    def forward(self, idx_seq, attr_seq, training_dropout=True):
         B, L = idx_seq.shape
         device = idx_seq.device
 
-        # A. Embeddings
-        # Attributi: (B, 3) -> (B, 3, D)
+        # --- A. ATTRIBUTE DROPOUT (CFG) ---
+        if training_dropout and self.training:
+            mask = torch.bernoulli(torch.full((B, 1), self.dropout_prob, device=device)).bool()
+            attr_seq = attr_seq.masked_fill(mask, 2)
+
+        # Embeddings
         x_attr = self.attr_emb(attr_seq.long())
-        
-        # Immagine: (B, 256) -> (B, 256, D)
         x_img = self.token_emb(idx_seq)
-        
-        # SOS Token: (1, 1, D) -> (B, 1, D)
         sos = self.sos_token.expand(B, -1, -1)
 
-        # B. Costruiamo la sequenza completa: [SOS, ATTR1, ATTR2, ATTR3, IMG_TOKENS...]
-        # Input sequence (per Teacher Forcing escludiamo l'ultimo token immagine)
-        # Sequence layout: [SOS, Attr(3), Img(0...254)] -> Predice -> [Attr(3), Img(0...255)]
+        # --- B. Positional Embeddings ---
+        # 1. Prompt (SOS + 3 Attr)
+        prompt_len = 1 + self.num_attr
+        pos_prompt = self.attr_pos_emb(torch.arange(prompt_len, device=device))
+        pos_prompt = pos_prompt.unsqueeze(0).expand(B, -1, -1)
         
-        # Concateniamo tutto: (B, 1+3+256, D)
-        full_seq_emb = torch.cat([sos, x_attr, x_img], dim=1)
-        
-        # Aggiungiamo Positional Encoding
-        seq_len = full_seq_emb.shape[1]
-        positions = torch.arange(seq_len, device=device).unsqueeze(0)
-        full_seq_emb = full_seq_emb + self.pos_emb(positions)
+        # 2. Immagine (Uso cache ottimizzata)
+        # Otteniamo (256, dim) -> expand a (B, 256, dim)
+        pos_img = self._get_cached_pos_emb().unsqueeze(0).expand(B, -1, -1)
 
-        # C. Passaggio Mamba
-        x = full_seq_emb
+        # Concatenazione
+        seq_emb = torch.cat([sos, x_attr, x_img], dim=1)
+        full_pos = torch.cat([pos_prompt, pos_img], dim=1)
+        
+        x = seq_emb + full_pos
+
         for layer in self.layers:
             x = layer(x)
             
-        # D. Output
-        # Ci interessa predire i token immagine.
-        # L'output corrispondente a SOS predice il primo attributo (non ci serve)
-        # ...
-        # L'output corrispondente all'ultimo Attributo predice il Primo Pixel (ci serve)
-        # Prendiamo solo la parte che predice l'immagine
-        
-        # Input agli strati: [SOS, A1, A2, A3, P0, P1 ... P254]
-        # Output layers:     [h0,  h1, h2, h3, h4, h5 ... h258]
-        # h3 (dopo A3) deve predire P0. h258 (dopo P254) deve predire P255.
-        
-        # Quindi prendiamo l'output dagli indici 4 in poi (saltiamo SOS + 3 Attr)
-        # Nota: dobbiamo assicurarci di avere la lunghezza giusta per il confronto
-        
         logits = self.head(x) 
-        
-        # Ritorniamo logits. Taglieremo in fase di loss calculation
         return logits
 
     @torch.no_grad()
-    def generate(self, attr_seq, steps=256, temperature=1.0, top_k=50):
-        """
-        Generazione con Multinomial Sampling.
-        temperature: >1.0 più caotico/diverso, <1.0 più conservativo/stabile.
-        top_k: considera solo i k token più probabili (taglia via il rumore).
-        """
+    def generate(self, attr_seq, steps=256, temperature=1.0, cfg_scale=3.0, top_k=50):
         import torch.nn.functional as F
         
         B = attr_seq.shape[0]
         device = attr_seq.device
         
-        # 1. Start Inference del Prof
-        for layer in self.layers:
-            layer.inference_start(batch_size=B)
-            
-        # 2. Processiamo il "Prompt" (SOS + Attributi)
-        sos = self.sos_token.expand(B, -1, -1)
-        attr = self.attr_emb(attr_seq.long())
+        # --- PREPARAZIONE DOPPIO BATCH (COND + UNCOND) ---
+        null_attrs = torch.full_like(attr_seq, 2)
+        combined_attrs = torch.cat([attr_seq, null_attrs], dim=0) # (2B, 3)
         
-        # Sequenza iniziale: [SOS, Attr1, Attr2, Attr3]
+        # Init inference
+        for layer in self.layers:
+            layer.inference_start(batch_size=2*B)
+            
+        # Prompt processing
+        sos = self.sos_token.expand(2*B, -1, -1)
+        attr = self.attr_emb(combined_attrs.long())
         start_seq = torch.cat([sos, attr], dim=1)
         
-        # Positional embedding per la parte iniziale
-        positions = torch.arange(4, device=device).unsqueeze(0)
-        start_seq = start_seq + self.pos_emb(positions)
+        # Positional Prompt
+        pos_prompt = self.attr_pos_emb(torch.arange(4, device=device)).unsqueeze(0).expand(2*B, -1, -1)
+        start_seq = start_seq + pos_prompt
 
-        # Alimentiamo Mamba con il contesto iniziale
-        next_token_embed = None
+        curr_state = None
+        # Pre-fill (Prompt)
         for i in range(start_seq.shape[1]):
             curr_input = start_seq[:, i:i+1, :]
             for layer in self.layers:
                 curr_input = layer.inference_step(curr_input)
-            
             if i == start_seq.shape[1] - 1:
-                next_token_embed = curr_input
+                curr_state = curr_input
 
-        # 3. Generazione Loop Immagine
         generated_indices = []
-        curr_state = next_token_embed
+        
+        # --- OTTIMIZZAZIONE CACHE ---
+        # Recuperiamo l'intera mappa posizionale (256, dim) una volta sola
+        # ed espandiamo per il batch raddoppiato.
+        full_pos_2d = self._get_cached_pos_emb().unsqueeze(0).expand(2*B, -1, -1)
         
         for i in range(steps):
-            # Ottieni i Logits dall'ultimo stato
-            logits = self.head(curr_state) # (B, 1, Vocab)
-            logits = logits[:, -1, :]      # (B, Vocab)
+            logits = self.head(curr_state)[:, -1, :]
             
-            # --- MULTINOMIAL SAMPLING ---
-            # 1. Applica Temperatura
-            logits = logits / temperature
+            cond_logits, uncond_logits = torch.split(logits, B, dim=0)
+            cfg_logits = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
             
-            # 2. Top-K Filtering (Opzionale ma raccomandato)
+            logits_to_sample = cfg_logits / temperature
             if top_k > 0:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                # Metti a -inf tutto ciò che è sotto la soglia del k-esimo elemento
-                logits[logits < v[:, [-1]]] = -float('Inf')
-
-            # 3. Calcola Probabilità e Campiona
-            probs = F.softmax(logits, dim=-1)
+                v, _ = torch.topk(logits_to_sample, min(top_k, logits_to_sample.size(-1)))
+                logits_to_sample[logits_to_sample < v[:, [-1]]] = -float('Inf')
             
-            # Qui avviene la magia: peschiamo in base alla probabilità, non al massimo
-            idx = torch.multinomial(probs, num_samples=1) # (B, 1)
+            probs = F.softmax(logits_to_sample, dim=-1)
+            idx = torch.multinomial(probs, num_samples=1)
             
             generated_indices.append(idx)
             
-            # --- PREPARAZIONE PROSSIMO STEP ---
-            # Embed del token appena predetto
-            curr_input = self.token_emb(idx)
+            next_idx = torch.cat([idx, idx], dim=0)
+            curr_input = self.token_emb(next_idx)
             
-            # Aggiungi posizione (offset di 4 perché abbiamo SOS+3Attr prima)
-            pos_idx = torch.tensor([4 + i], device=device)
-            curr_input = curr_input + self.pos_emb(pos_idx)
+            # Accesso diretto in memoria senza calcoli, già sul device corretto
+            curr_pos = full_pos_2d[:, i:i+1, :]
+            curr_input = curr_input + curr_pos
             
-            # Mamba step
             for layer in self.layers:
                 curr_input = layer.inference_step(curr_input)
             curr_state = curr_input
