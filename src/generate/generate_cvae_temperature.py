@@ -1,82 +1,84 @@
 import torch
-from torchvision.utils import save_image
+import matplotlib.pyplot as plt
 import sys
 from pathlib import Path
+from torchvision.utils import make_grid
 
-# --- PARAMETRI (Devono essere uguali al train) ---
-EXP_NAME = "cvae_balanced_sum_loss"
+# --- PARAMETRI ---
+EXP_NAME = "cvae_final_VGG128sqrt_balanced_sl4"
 LATENT_DIM = 128 
-ATTR_INDICES = [20, 31, 39] 
+ATTR_INDICES = [20, 31, 39] # Male, Smiling, Young
 NUM_ATTR = len(ATTR_INDICES)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+TEMPERATURE = 0.5  # T < 1.0 per maggiore nitidezza
+SAMPLES_PER_ROW = 8 
 
-# --- PARAMETRO TEMPERATURA ---
-# T = 1.0: Campionamento standard (facce più "medie")
-# T > 1.0: Più varietà e diversità (es. 1.2, 1.5)
-# T < 1.0: Più precisione, ma facce quasi identiche (es. 0.7)
-TEMPERATURE = 1.3
-
-# Aggiunta root al path
+# --- CONFIGURAZIONE ---
 ROOT = Path(__file__).parent.parent.parent
 sys.path.append(str(ROOT))
 
 import config
 from src.models.cvae import CelebACVAE
 
-def generate():
+def generate_table():
     checkpoint_path = config.MODEL_PATH / EXP_NAME / "model.pth"
-    # Creiamo una sottocartella specifica per i test con temperatura
-    output_dir = config.OUTPUT_DIR_PATH / EXP_NAME / f"temp_{TEMPERATURE}"
+    output_dir = config.OUTPUT_DIR_PATH / EXP_NAME
     output_dir.mkdir(parents=True, exist_ok=True)
     
     if not checkpoint_path.exists():
         print(f"Errore: Modello non trovato in {checkpoint_path}")
         return
 
-    # 1. Caricamento Modello
     model = CelebACVAE(latent_dim=LATENT_DIM, num_attr=NUM_ATTR).to(DEVICE)
     model.load_state_dict(torch.load(str(checkpoint_path), map_location=DEVICE))
     model.eval()
 
-    # 2. Combinazioni di test [Male, Smiling, Young]
-    scenari = {
-        "donna_sorridente_giovane": [0., 1., 1.],
-        "uomo_non_sorridente_giovane": [1., 0., 1.],
-        "donna_non_sorridente_anziana": [0., 0., 0.],
-        "uomo_sorridente_anziano": [1., 1., 0.]
-    }
+    scenari = [
+        {"desc": "DONNA - SORRIDENTE - GIOVANE", "attr": [0., 1., 1.]},
+        {"desc": "DONNA - SORRIDENTE - ANZIANA", "attr": [0., 1., 0.]},
+        {"desc": "DONNA - NON SORRIDENTE - GIOVANE",      "attr": [0., 0., 1.]},
+        {"desc": "DONNA - NON SORRIDENTE - ANZIANA",     "attr": [0., 0., 0.]},
+        {"desc": "UOMO - SORRIDENTE - GIOVANE",  "attr": [1., 1., 1.]},
+        {"desc": "UOMO - SORRIDENTE - ANZIANO",  "attr": [1., 1., 0.]},
+        {"desc": "UOMO - NON SORRIDENTE - GIOVANE",       "attr": [1., 0., 1.]},
+        {"desc": "UOMO - NON SORRIDENTE - ANZIANO",      "attr": [1., 0., 0.]},
+    ]
 
-    print(f"Generazione con Temperatura = {TEMPERATURE} su {DEVICE}...")
+    fig, axes = plt.subplots(len(scenari), 1, figsize=(18, 22))
+    
+    print(f"Generazione tabella ordinata per {EXP_NAME} con T={TEMPERATURE}...")
 
     with torch.no_grad():
-        for nome, attributi in scenari.items():
-            # Creiamo un vettore di attributi e lo spostiamo su GPU
-            cond = torch.tensor([attributi]).to(DEVICE)
+        for i, scenario in enumerate(scenari):
+            # Preparazione condizionamento
+            cond = torch.tensor([scenario["attr"]]).to(DEVICE).float()
+            cond_expanded = cond.expand(SAMPLES_PER_ROW, -1)
             
-            # --- APPLICAZIONE TEMPERATURE CONTROL ---
-            # Moltiplichiamo il rumore casuale per la temperatura.
-            # Questo allarga la campana di Gauss, forzando il decoder a 
-            # generare tratti meno "medi" e più originali.
-            z = torch.randn(16, LATENT_DIM).to(DEVICE) * TEMPERATURE
+            # Generazione vettore latente con Temperatura
+            z = torch.randn(SAMPLES_PER_ROW, LATENT_DIM).to(DEVICE) * TEMPERATURE
             
-            # Espandiamo il condizionamento per i 16 campioni
-            cond_expanded = cond.expand(16, -1)
-            
-            # Concateniamo z e attributi
+            # --- DECODER ---
             z_cond = torch.cat((z, cond_expanded), dim=1)
+            y = model.dec_input(z_cond).view(-1, 512, 4, 4)
             
-            # Logica Decoder
-            x = model.decoder_input(z_cond)
-            samples = model.decoder(x).cpu()
+            y = model.up1(model._inject_cond(y, cond_expanded))
+            y = model.up2(model._inject_cond(y, cond_expanded))
+            y = model.up3(model._inject_cond(y, cond_expanded))
+            y = model.up4(model._inject_cond(y, cond_expanded))
             
-            save_path = output_dir / f"risultato_{nome}_T{TEMPERATURE}.png"
-            # normalize=False perché la Sigmoid finale dà già valori [0,1]
-            save_image(samples, save_path, nrow=4, normalize=False)
-            print(f"Salvato: {save_path}")
+            grid = make_grid(y.cpu(), nrow=SAMPLES_PER_ROW, padding=4, normalize=True)
+            img = grid.permute(1, 2, 0).numpy()
+            
+            axes[i].imshow(img)
+            axes[i].axis('off')
+            axes[i].set_title(scenario["desc"], fontsize=16, fontweight='bold', pad=15)
 
-    print(f"\nGenerazione completata! Controlla la cartella: {output_dir}")
+    plt.tight_layout(pad=3.0)
+    save_path = output_dir / f"grid_{EXP_NAME}_T{TEMPERATURE}.png"
+    plt.savefig(save_path, facecolor='white', bbox_inches='tight')
+    plt.close()
+    
+    print(f"Tabella salvata con successo in: {save_path}")
 
 if __name__ == "__main__":
-    # Puoi provare diverse temperature per trovare il punto di equilibrio
-    # tra qualità (T bassa) e varietà (T alta).
-    generate()
+    generate_table()
