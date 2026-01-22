@@ -2,7 +2,7 @@ from pathlib import Path
 
 # Questo trova automaticamente la cartella dove si trova QUESTO file (la root)
 ROOT_DIR = Path(__file__).parent.resolve()
-print(ROOT_DIR)
+#print(ROOT_DIR)
 MODEL_PATH = ROOT_DIR / "models"
 
 DATASET_BASIC_PATH = ROOT_DIR / "dataset"

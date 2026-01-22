@@ -15,7 +15,7 @@ transform = transforms.Compose([
 train_dataset = CelebA(
     root='./dataset',       # Cartella dove salvare i dati
     split='train',       # 'train', 'valid', o 'test'
-    target_type='attr',  # Ci servono gli attributi (Smiling, Male, ecc.) 
+    target_type='attr',  
     transform=transform,
     download=False       
 )

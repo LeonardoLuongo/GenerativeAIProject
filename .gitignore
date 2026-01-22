@@ -1,3 +1,5 @@
 *.pt
 dataset/celeba/*
 runs/**/*
+*.pth
+*.png
