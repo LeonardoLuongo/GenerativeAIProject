@@ -2,3 +2,4 @@
 dataset/celeba/*
 runs/**/*
 __pycache__/
+weights/*/*
