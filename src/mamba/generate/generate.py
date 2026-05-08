@@ -3,6 +3,7 @@ import os
 import torch
 import matplotlib.pyplot as plt
 import torchvision
+from pathlib import Path
 from torchvision.utils import save_image, make_grid
 
 # --- SETUP PATH ---
@@ -10,13 +11,13 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_path = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(src_path)
 
-from vqvae.model.vq_vae import VQVAE
+from mamba.model.vq_vae import VQVAE
 from mamba.model.mamba_vqvae import MambaVQVAE
 
 # --- CONFIG ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-VQ_CHECKPOINT = "checkpoints/vqvae_16x16_2_epoch_50.pth"
-MAMBA_CHECKPOINT = "checkpoints/mamba_vqvae_snake_cfg_k17_epoch_100.pth" # Usa il tuo ultimo checkpoint
+VQ_CHECKPOINT = "weights/mamba/vqvae_16x16_2_epoch_50.pth"
+MAMBA_CHECKPOINT = "weights/mamba/mamba_vqvae_snake_cfg_k17_epoch_100.pth" # Usa il tuo ultimo checkpoint
 
 # Configurazione identica al training
 MAMBA_CONFIG = {
@@ -61,7 +62,7 @@ def main():
         "M NoSmile Old", "M NoSmile Young", "M Smile Old", "M Smile Young"
     ]
 
-    NUM_VARIANTS = 16 # Quante immagini per ogni categoria
+    NUM_VARIANTS = 8 # Quante immagini per ogni categoria
     
     # Creiamo il batch gigante: (8 categorie * 8 varianti) = 64 immagini
     attr_list = []
@@ -76,13 +77,11 @@ def main():
     
     with torch.no_grad():
         # --- GENERAZIONE MAMBA ---
-        # CFG Scale alto (4.0 o 5.0) migliora la nitidezza e l'aderenza agli attributi
-        # Temperature < 1.0 riduce gli artefatti
         indices_snake = mamba.generate( 
             attr_tensor, 
             steps=256, 
-            temperature=1.0, 
-            cfg_scale=1.5 
+            temperature=0.8, 
+            cfg_scale=1.7 
         )
         
         # --- RETTIFICA INDICI (Snake -> Raster) ---
@@ -101,7 +100,12 @@ def main():
     grid_img = make_grid(images, nrow=NUM_VARIANTS, padding=2, pad_value=1) # pad_value=1 è bianco
     
     output_filename = "mamba_mosaic_results.png"
-    save_image(grid_img, output_filename)
+    save_dir = Path("output/mamba") 
+    save_path = save_dir / output_filename
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    save_image(grid_img, str(save_path))
     print(f"\n✅ Immagine salvata come: {output_filename}")
     print("   Aprila con un visualizzatore immagini per vederla alla risoluzione reale!")
 
