@@ -71,11 +71,9 @@ A two-stage model: first learn a discrete vocabulary of image patches, then gene
 
 ## Results
 
-Uncurated samples, 8 per attribute combination:
+Uncurated samples, 8 per attribute combination, same rows for all three models:
 
-| CVAE | Diffusion | Mamba |
-|---|---|---|
-| ![CVAE](output/cvae/cvae_T1.0.png) | ![Diffusion](output/diffusion/test_grid_8x8_ddim_fast.png) | ![Mamba](output/mamba/mamba_mosaic_results.png) |
+![Uncurated samples from the three models](docs/results_grid.png)
 
 Mamba grid rows, top to bottom: woman serious older, woman serious young, woman smiling older, woman smiling young,
 and the same four for men.
