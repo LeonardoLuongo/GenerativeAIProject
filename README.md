@@ -164,5 +164,6 @@ dataset from the cluster path in `DATA_ROOT`; change it to your local copy befor
 
 ## Authors
 
-- Francesco Monda
+- Andrea Pulzone
 - Leonardo Luongo
+- Francesco Monda
