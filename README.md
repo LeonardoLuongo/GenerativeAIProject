@@ -73,7 +73,7 @@ A two-stage model: first learn a discrete vocabulary of image patches, then gene
 
 Uncurated samples, 8 per attribute combination, same rows for all three models:
 
-![Uncurated samples from the three models](docs/results_grid.png)
+![Uncurated samples from the three models](docs/images/results_grid.png)
 
 Mamba grid rows, top to bottom: woman serious older, woman serious young, woman smiling older, woman smiling young,
 and the same four for men.
