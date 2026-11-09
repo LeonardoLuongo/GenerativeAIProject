@@ -15,7 +15,7 @@ The brief asked for three models built on three *different* techniques. We picke
 Project for the *Generative AI* course (prof. Pasquale Foggia), MSc in Computer Engineering, University of Salerno, A.Y. 2025/26.
 
 <p align="center">
-  <img src="docs/linkedin/02_comparison.png" width="620" alt="Two samples per attribute combination for each model">
+  <img src="docs/images/02_comparison.png" width="620" alt="Two samples per attribute combination for each model">
 </p>
 
 ---
